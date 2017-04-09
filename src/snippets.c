@@ -2,7 +2,7 @@
  * @file    snippets.c
  * @brief   handle snppets
  *
- * Copyright (C) 2009-2016 Gummi Developers
+ * Copyright (C) 2009-2016 Gummi-Dev Team <alexvandermey@gmail.com>
  * All Rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person
@@ -41,6 +41,7 @@
 #include "environment.h"
 #include "porting.h"
 #include "utils.h"
+#include "configfile.h"
 
 GuSnippets* snippets_init (const gchar* filename) {
     GuSnippets* s = g_new0 (GuSnippets, 1);
@@ -228,16 +229,91 @@ void snippets_set_accelerator (GuSnippets* sc, gchar* config) {
 void snippets_activate (GuSnippets* sc, GuEditor* ec, gchar* key) {
     gchar* snippet = NULL;
     GuSnippetInfo* new_info = NULL;
-    GtkTextIter start, end;
+    GtkTextIter start, end, ind_start;
+    gint indent;
 
     slog (L_DEBUG, "Snippet `%s' activated\n", key);
 
     snippet = snippets_get_value (sc, key);
+    slog(L_DEBUG, "snippet at beginning: %s\n", snippet);
+
     g_return_if_fail (snippet != NULL);
 
-    new_info = snippets_parse (snippet);
-
     gtk_text_buffer_get_selection_bounds (ec_buffer, &start, &end);
+
+    indent = 0;
+    ind_start = start;
+
+    gboolean use_spaces = TO_BOOL (config_get_value ("spaces_instof_tabs"));
+    gint tab_width = atoi (config_get_value ("tabwidth"));
+
+    if(use_spaces) {
+       while (!gtk_text_iter_starts_line(&ind_start) &&
+	       gtk_text_iter_backward_char(&ind_start) &&
+	       gtk_text_iter_get_char(&ind_start) == ' ') { /* space character */
+	    indent++;
+       }
+       indent = indent / tab_width;
+    }
+    else {
+	while (!gtk_text_iter_starts_line(&ind_start) &&
+	       gtk_text_iter_backward_char(&ind_start) &&
+	       gtk_text_iter_get_char(&ind_start) == 9) { /* tab key character */
+	    indent++;
+	}
+    }
+
+    if (indent > 0) {
+        slog(L_DEBUG, "Indentation level: %d, reformatting snippet.\n",
+             indent);
+
+        gchar* ind_snippet = snippets_add_indent(snippet, indent);
+
+	if(use_spaces) {
+	    gint cnt = strlen(ind_snippet)+1;
+	    for (const gchar *p = ind_snippet; *p ; cnt += (*p++ == '\t') * tab_width);
+	    gchar *res = malloc(cnt);
+	    gchar *out = res;
+	    const gchar *in = ind_snippet;
+	    while (*in) {
+		if (*in == '\t') {
+		    for(gint i = 0; i < tab_width; i++) {
+			*out++ = ' ';
+		    }
+		} else {
+		    *out++ = *in;
+		}
+		in++;
+	    }
+	    *out++ = '\0';
+	    ind_snippet = res;
+	}
+
+        new_info = snippets_parse(ind_snippet);
+        g_free(ind_snippet);
+    } else {
+	if(use_spaces) {
+	    gint cnt = strlen(snippet)+1;
+	    for (const gchar *p = snippet; *p ; cnt += (*p++ == '\t') * tab_width);
+	    gchar *res = malloc(cnt);
+	    gchar *out = res;
+	    const gchar *in = snippet;
+	    while (*in) {
+		if (*in == '\t') {
+		    for(gint i = 0; i < tab_width; i++) {
+			*out++ = ' ';
+		    }
+		} else {
+		    *out++ = *in;
+		}
+		in++;
+	    }
+	    *out++ = '\0';
+	    snippet = res;
+	}
+        new_info = snippets_parse(snippet);
+    }
+
     new_info->start_offset = gtk_text_iter_get_offset (&start);
     new_info->sel_text = gtk_text_iter_get_text (&start, &end);
     GSList* marks = gtk_text_iter_get_marks (&start);
@@ -384,6 +460,46 @@ GuSnippetInfo* snippets_parse (char* snippet) {
     info->einfo_sorted = g_list_sort (info->einfo_sorted, snippet_info_num_cmp);
 
     return info;
+}
+
+gchar* snippets_add_indent(char* snippet, gint indent) {
+    /* split by newline */
+    gchar **lines = g_strsplit(snippet, "\n", -1);
+
+    gboolean use_spaces = TO_BOOL (config_get_value ("spaces_instof_tabs"));
+    gint tab_width = atoi (config_get_value ("tabwidth"));
+
+    /* construct new delimiter */
+    if(!use_spaces) {
+        gint len = indent + 1;
+        gchar delim[len + 1];
+        delim[0]='\n';
+        for (gint i = 1; i < len; i++) {
+            delim[i] = '\t';
+        }
+        delim[len] = '\0';
+
+	/* join lines with new delimiter */
+	gchar *result = g_strjoinv(delim, lines);
+	g_strfreev(lines);
+	return result;
+    }
+    else {
+        gint len = indent * tab_width + 1;
+        gchar delim[len + 1];
+        delim[0]='\n';
+        for (gint i = 1; i < len; i = i + tab_width) {
+            for(gint j = 0; j < tab_width; j++) {
+	        delim[i+j] = ' ';
+	    }
+        }
+        delim[len] = '\0';
+
+	/* join lines with new delimiter */
+	gchar *result = g_strjoinv(delim, lines);
+	g_strfreev(lines);
+	return result;
+    }
 }
 
 void snippets_accel_cb (GtkAccelGroup* accel_group, GObject* obj,
@@ -651,3 +767,4 @@ gint snippet_info_pos_cmp (gconstpointer a, gconstpointer b) {
     return ( (GU_SNIPPET_EXPAND_INFO (a)->start <
                 GU_SNIPPET_EXPAND_INFO (b)->start)? -1: 1);
 }
+
